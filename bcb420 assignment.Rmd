@@ -1,0 +1,247 @@
+---
+title: "BCB420 Assignment1"
+author: "Jiayan Wang"
+output:
+  html_document:
+    df_print: paged
+---
+
+## 1. Introduction
+
+Lung cancer is the one of the leading cause of death from cancer and non small cell lung cancer(NSCLC) is the most common type of lung cancer, account for 85% of all lung cancer.Morever, statistics shows that the overall 5-year survival rate for NSCLC is under 20%. Recent studies have revealed the important role of G9a, a histone methyltransferase, in various cancer cells. G9a is responsible for the mono- and di-methylation of H3K9 and its overexpression was ovserved in most lung cancer cells including
+
+Therefore, I choose the dataset that investigate the role of dysregulated histone methyltransferase G9a in two human non-small cell lung cancer (NSCLC) cell lines. The mechanistic investigation of G9A knockdown and its role in in anti-tumor activity might be able to uncover the possible therapeutic target in NSCLC diagnosis and treatment.
+
+
+
+
+## 2. Get GSE object and platform information:
+
+ * R packages that required for data processing
+ 
+```{r, message=FALSE}
+library(BiocManager)
+library(GEOquery)
+library(edgeR)
+library(biomaRt)
+library(Biobase)
+```
+ 
+ * Download and parse GSE object from NCBI GEO
+
+```{r Get GSE object, message=FALSE}
+gse <- getGEO("GSE113493",GSEMatrix=FALSE)
+current_gpl <- names(GPLList(gse))[1]
+current_gpl_info <- Meta(getGEO(current_gpl))
+```
+* My dataset: GSE113493
+
+* Title: `r gse@header$title`
+
+* Platform: `r gse@gpls$GPL11154@header$geo_accession`
+
+* Platform title: `r gse@gpls$GPL11154@header$title`
+
+* Organism: `r gse@gpls$GPL11154@header$organism`
+
+* Experiment type: `r gse@gpls$GPL11154@header$technology`
+
+* Number of GEO datasets that use this techology: `r length(current_gpl_info$series_id)`
+ 
+* Number of GEO samples that use this technology: `r length(current_gpl_info$sample_id)`
+ 
+
+
+* Overall Design: Two non-small cell lung cancer(NSCLC) cell lines (A549 and H1299) were first treated with G9A inhibitor to silence G9a expression. Then cells were transfected into two condition: one with control siRNA and other with G9a specific siRNA. Then differential gene expression of cells upon knockdown of G9a were performed to see if these pathways contains G9a-mediated cancer expression.  
+ 
+## 3. Get the expression data
+
+```{r}
+sfiles = getGEOSuppFiles('GSE113493')
+fnames = rownames(sfiles)
+exp_data = read.delim(fnames[1],header=TRUE,
+                      check.names = FALSE)
+colnames(exp_data)[1] = "gname"
+head(exp_data)
+```
+
+
+* __create a table to show data characteristics in the sampling__
+```{r}
+samples <- data.frame(lapply(colnames(exp_data)[2:9],
+                             FUN=function(x){
+                               x <- gsub("(-[G])", "_G9a+-", x)
+                               x <- gsub("(-[C])", "_Control-", x)
+                               unlist(strsplit(x, split = "_"))[c(2,3)]}))
+colnames(samples) <- colnames(exp_data)[2:9]
+rownames(samples) <- c("cell","control_vs_treatment")
+samples <- data.frame(t(samples))
+head(samples)
+```
+
+The dataset contains `r nrow(exp_data)` genes of interest from `r nrow(samples)` samples of `r length(unique(samples$cell))` NSCLC cell lines.
+
+
+
+## 4. clean the data
+* __get number of rows(genes) in the dataset__
+```{r}
+dim(exp_data)
+```
+There are `r nrow(exp_data)` genes measured from 8 experiments: 2 control and 2 treated with Ga9 for 2 cell lines. (2*2*2 = 8)
+
+* __get frequence counts for each gene__
+```{r}
+gene_counts <- sort(table(exp_data$gname),decreasing = TRUE)
+head(gene_counts)
+```
+There are no duplicates in the data, that is, expression value is unique for each gene.
+
+* __filter weakly expressed features__
+```{r message=FALSE}
+library(edgeR)
+cpms <- cpm(y =exp_data[,2:9])
+rownames(cpms) <- exp_data[,1]
+keep = rowSums(cpms >1) >=3
+exp_data_filtered = exp_data[keep,]
+colnames(exp_data_filtered)[1] = "gname"
+dim(exp_data) #before filtering
+dim(exp_data_filtered) #after filtering
+```
+`r nrow(exp_data)- nrow(exp_data_filtered)` genes with low-count(less than 3) were filtered out. This helps removes noises and will enrich for true differential expression.
+
+## 5. data distribution
+
+
+* __visualize our data__
+```{r warning=FALSE}
+data2plot <- log2(cpm(exp_data_filtered[,2:9]))
+bp <- boxplot(data2plot, xlab = "Samples", ylab = "log2 CPM",
+        las = 2, cex = 0.5, cex.lab = 0.5,
+        cex.axis = 0.5, main = "Ga9 RNASeq Samples")
+
+#draw the median on each box plot
+abline(h = median(apply(data2plot, 2, median)), col = "green", lwd = 2, lty = "dashed")
+
+```
+
+The boxplot shows that the median of each sample are very close to each other. This is consistant with the fact that the dta has been normalized already. 
+There are also a few outliers in the boxplot and some of them are too extreme to show, so we can have a look of them.
+* There are `r length(bp$out)` outliers and most of them are due to low counts(less than 2) in the raw count dataset
+* `r sum(bp$out == "-Inf")` ouliers shows "-Inf" which means negative infinity. This is due to 0 counts in the dataset.
+* Outliers were not removed at this stage. I
+
+
+
+* __density plot__
+```{r}
+counts_density <- apply(log2(cpm(exp_data_filtered[,2:9])), 2, density)
+  #calculate the limits across all the samples
+    xlim <- 0; ylim <- 0
+    for (i in 1:length(counts_density)) {
+      xlim <- range(c(xlim, counts_density[[i]]$x));
+      ylim <- range(c(ylim, counts_density[[i]]$y))
+    }
+    cols <- rainbow(length(counts_density))
+    ltys <- rep(1, length(counts_density))
+    #plot the first density plot to initialize the plot
+    plot(counts_density[[1]], xlim=xlim, ylim=ylim, type="n",
+         ylab="Smoothing density of log2-CPM", main="", cex.lab = 0.85)
+    #plot each line
+    for (i in 1:length(counts_density)) lines(counts_density[[i]], col=cols[i], lty=ltys[i])
+    #create legend
+    legend("topright", colnames(data2plot),  
+           col=cols, lty=ltys, cex=0.75,
+           border ="blue",  text.col = "green4",
+           merge = TRUE, bg = "gray90")
+```
+
+## 6. Data Normalization
+
+The main aim for data normaliztion is to make the expression value comparable between different samples. Trimmed Mean of M-values” normalization (TMM) adjustment is considered appropriate as it use one sample as a reference and estimate correction factors for each samples.(ref:https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0206312) TMM method is implemented using edgeR package.
+
+The original data has been normalized. According to the paper, the dataset has been normalized using Illumina Genome Analyzer II.But I still applied TMM to see if there is any difference after 
+
+Therefore, no significant difference observed after applying TMM to the dataset.  
+
+
+```{r}
+filtered_data_matrix <- as.matrix(exp_data_filtered[,2:9])
+rownames(filtered_data_matrix) <- exp_data_filtered$gname
+d = DGEList(counts=filtered_data_matrix, group=samples$cell_type)
+#get the normalized data
+normalized_counts <- cpm(d)
+```
+
+* __desity plot after normalization__
+```{r}
+normalized_counts_density <- apply(log2(normalized_counts[,2:8]), 2, density)
+
+  #calculate the limits across all the samples
+    xlim <- 0; ylim <- 0
+    for (i in 1:length(normalized_counts_density)) {
+      xlim <- range(c(xlim, normalized_counts_density[[i]]$x));
+      ylim <- range(c(ylim, normalized_counts_density[[i]]$y))
+    }
+    cols <- rainbow(length(normalized_counts_density))
+    ltys <- rep(1, length(normalized_counts_density))
+    #plot the first density plot to initialize the plot
+    plot(normalized_counts_density[[1]], xlim=xlim, ylim=ylim, type="n",
+         ylab="Smoothing density of log2-CPM", main="Density Plot after Normalization", cex.lab = 0.85)
+    #plot each line
+    for (i in 1:length(normalized_counts_density)) lines(normalized_counts_density[[i]], col=cols[i], lty=ltys[i])
+    #create legend
+    legend("topright", colnames(data2plot),  
+           col=cols, lty=ltys, cex=0.75,
+           border ="blue",  text.col = "green4",
+           merge = TRUE, bg = "gray90")
+```
+
+* __MDS plot to show the distribution of samples__
+```{r}
+plotMDS(d, labels=rownames(samples),
+  col = c("darkgreen","blue")[factor(samples$control_vs_treatment)],cex = 0.8,xlim= range(-6,6),
+  main="Multidimensional Scaling Plot")
+```
+
+The MDS plot show that samples have smaller distance within same cell line within both control and G9a group. The overlapping samples are replicates that showing highes similarities. 
+
+
+
+
+## 7. Identifier mapping
+
+The dataset has been already mapped with HGNC identifiers. They were further validated through HGNChelper package.
+
+```{r, message=FALSE}
+if (!require("HGNChelper")) install.packages("HGNChelper")
+library(HGNChelper)
+```
+
+```{r, warning=FALSE}
+hgnc_check <- HGNChelper::checkGeneSymbols(exp_data_filtered$gname,species = "human")
+unknown <- hgnc_check[hgnc_check$Approved == FALSE & is.na(hgnc_check$Suggested.Symbol),]
+incorrect<- hgnc_check[hgnc_check$Approved == FALSE & !is.na(hgnc_check$Suggested.Symbol),]
+head(unknown)
+head(incorrect)
+```
+
+
+* `r nrow(unknown)` identifiers were shown unmatched according to HGNC gene name checker. So they were removed from the dataset.
+
+* `r nrow(incorrect)` identifiers were shown incorrect and were replaced by suggested symbols. 
+
+* For identifier mapping, we have `r (nrow(exp_data_filtered)-nrow(unknown))/nrow(exp_data_filtered)*100` coverage of the dataset.
+
+* Overall, we have `r (nrow(exp_data_filtered)-nrow(unknown))/ nrow(exp_data)*100` coverage of the dataset at this stage.
+
+
+## 8. Reference
+
+[1]GEO Accession viewer. (n.d.). Retrieved February 4, 2020, from https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE113493
+
+[2]Lung Cancer - Non-Small Cell: Statistics | Cancer.Net. (n.d.). Retrieved February 4, 2020, from https://www.cancer.net/cancer-types/lung-cancer-non-small-cell/statistics
+
+[3]Zhang, K., Wang, J., Yang, L., Yuan, Y.-C., Tong, T. R., Wu, J., … Raz, D. J. (2018). Targeting histone methyltransferase G9a inhibits growth and Wnt signaling pathway by epigenetically regulating HP1α and APC2 gene expression in non-small cell lung cancer. Molecular Cancer, 17(1), 153. https://doi.org/10.1186/s12943-018-0896-8
+
+[4]Tachibana, M., Sugimoto, K., Nozaki, M., Ueda, J., Ohta, T., Ohki, M., … Shinkai, Y. (2002). G9a histone methyltransferase plays a dominant role in euchromatic histone H3 lysine 9 methylation and is essential for early embryogenesis. Genes and Development, 16(14), 1779–1791. https://doi.org/10.1101/gad.989402
